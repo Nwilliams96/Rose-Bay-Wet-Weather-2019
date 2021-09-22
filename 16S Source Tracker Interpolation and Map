@@ -1,0 +1,146 @@
+```{r Predict data for map method 2. Step 0: Libraries}
+# We will need some packages for (spatial) data processing
+library(tidyverse) # wrangling tabular data and plotting
+library(reshape2)
+library(sf) # processing spatial vector data
+library(sp) # another vector data package necessary for continuity
+library(raster) # processing spatial raster data. !!!overwrites dplyr::select!!!
+
+# And a lot of different packages to test their interpolation functions
+library(fields) # Thin Plate Spline
+library(interp) # Triangulation
+library(mgcv)   # Spatial GAM
+
+# Finally, some packages to make pretty plots
+library(patchwork) ####
+library(viridis)
+library(oce)
+```
+
+```{r Predict Data for Map - Method 1: Data}
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+Results <- read_csv('SourceTracker.Results_ST.metadata_postrain_Drain6impct.csv')
+sample_data <- read_csv("SMD.rarefied.csv")
+Results <- Results %>% rename(SampleID = names)
+Results <- Results %>% left_join(sample_data)
+Results.avg <- Results %>% group_by(Location) %>% mutate(Average_Impact = mean(D6.0)) %>% distinct(Location, .keep_all = TRUE)
+Results <- Results.avg %>% dplyr::select(SampleID,Location,Weather,Distance_Offshore,Transect,Latitude,Longitude,Average_Impact)
+```
+
+```{r Predict data for map method 2. Step 0: Data, Data Check }
+point_plot <- ggplot(data = Results, mapping = aes(x = Longitude, y = Latitude, color = Average_Impact)) +
+              scale_fill_gradientn(colors=oceColors9A(100), na.value = NA, limits = c(0.07,0.806133333)) +
+              geom_point(size = 3)
+
+point_plot
+```
+
+```{r predict data for map - method#2 Step 1: Create a grid template}
+bbox <- c(
+  "xmin" = min(151.2533),
+  "ymin" = min(-33.875),
+  "xmax" = max(151.2710),
+  "ymax" = max(-33.845)
+)
+
+grd_template <- expand.grid(
+  X = seq(from = bbox["xmin"], to = bbox["xmax"], by = 0.0001),
+  Y = seq(from = bbox["ymin"], to = bbox["ymax"], by = 0.0001)
+)
+
+grid_plot <- ggplot() +
+  geom_point(data = grd_template, aes(x = X, y = Y), size = 0.01) +
+  geom_point(data = Results,
+  mapping = aes(x = Longitude, y = Latitude, color = Average_Impact), size = 3) +
+  scale_color_gradientn(colors = c("blue", "yellow", "red")) +
+  coord_cartesian(xlim = c(151.2515,151.2725), ylim = c(-33.875,-33.847)) +
+  theme_bw()
+#grid_plot
+
+```
+
+```{r predict data for map - method#2 Step 1b: Rasterizing your grid template}
+# {raster} expects a PROJ.4 string, see https://epsg.io/25833
+crs_raster_format <- "+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
+
+grd_template_raster <- grd_template %>% 
+  dplyr::mutate(Z = 0) %>% 
+  raster::rasterFromXYZ( 
+    crs = crs_raster_format)
+```
+
+```{r Step 2: Fit a model}
+# We start with functions that return model objects as this is the most common case
+
+# Thin Plate Spline Regression
+fit_TPS <- fields::Tps( # using {fields}
+  x = as.matrix(Results[, c("Longitude", "Latitude")]), # accepts points but expects them as matrix
+  Y = Results$Average_Impact,  # the dependent variable
+  miles = FALSE     # EPSG 25833 is based in meters
+)
+```
+
+```{r Step 3: Interpolate}
+interp_TPS <- interpolate(grd_template_raster, fit_TPS)
+```
+
+```{r Step 3b: Extract}
+df <- rasterToPoints(interp_TPS) %>% as_tibble()
+  colnames(df) <- c("Longitude", "Latitude", "Average_Impact")
+```
+
+```{r Map for Source Tracker Data: Libraries}
+library(tidyverse)
+library(oce)
+library(sf)
+library(rgdal)
+library(ggplot2)
+library(rgeos) 
+```
+
+```{r Map for Source Tracker Data: Load data}
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data")
+
+shape <- readOGR(dsn = "~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/Shapefiles/Estuaries/Data/Estuaries.shp", layer = "Estuaries")
+
+my.estuaries<-c("PORT JACKSON HARBOUR","PARRAMATTA RIVER ESTUARY","LANE COVE RIVER ESTUARY",
+                "MIDDLE HARBOUR CREEK ESTUARY","PARRAMATTA RIVER FRESHWATER")
+
+my.estuary.shapes<-shape[shape$NAMETYPE %in% my.estuaries,]
+
+maptheme <- theme(panel.background = element_rect("#dfdbd5"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.key.size = unit(3,"line"))
+```
+
+```{r Map for Source Tracker Data: Basemap}
+  Basemap <- ggplot() + 
+  geom_polygon(data = fortify(my.estuary.shapes), aes( x = long, y = lat, group = group), fill="lightblue2", color=NA) +
+  maptheme +
+  coord_equal(xlim=c(151.2515,151.2725), ylim=c(-33.875,-33.847)) +
+  labs(x='Longitude', y='Latitude')
+Basemap
+```
+
+```{r Step 4: Make Plot breaks}
+
+df2<-df%>%
+  mutate(countfactor=cut(Average_Impact,breaks=c(0.001,0.004,0.006,0.008,0.01,max(Average_Impact,na.rm=T)),
+                             labels=c("0-0.001","0.001-0.004","0.004-0.006","0.006-0.008",">0.01"))) 
+colours <- c("#7db45e","#ffd92c","#ffa93a","#e85a28","#92292e")
+colours2 <- c("#7db45e","#717a41","#7b5d33","#ffd92c","#ffa93a")
+```
+
+```{r Step 5: Plot}
+SourceTrackerMap <- ggplot() + 
+  scale_fill_manual(values =colours2, na.value = "lightblue") + 
+  geom_polygon(data = fortify(my.estuary.shapes), aes( x = long, y = lat, group = group),fill="lightblue",color=NA) +
+  coord_equal(xlim=c(151.2540,151.2702), ylim=c(-33.875,-33.847)) +
+  labs(x='Longitude', y='Latitude') +
+  geom_raster(data=df2, aes(x=Longitude, y=Latitude, fill=countfactor, alpha = 1)) +
+  maptheme
+SourceTrackerMap
+```
