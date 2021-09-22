@@ -1,0 +1,219 @@
+```{r Load Data}
+library("phyloseq")
+library("vegan")
+library("ggplot2")
+library("dplyr")
+library("ape")
+library("tidyverse")
+library("tidyr")
+
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+sample_data <- read_csv('SMD.rarefied.csv')
+asv_rarefy30k_long <- read_csv("asv_rarefy30k_long.csv")
+
+
+NathanTheme <- list(   #scale_x_discrete(limits=(locations)),
+                       theme(axis.title.x = element_text(vjust = 0, hjust = 0.5, size = 16)),
+                       theme(axis.title.y = element_text(vjust = 1, hjust = 0.5, size = 16)),
+                       theme(axis.text=element_text(size=10)),
+                       theme(axis.text.x = element_text(hjust=1, size = 14, angle = 90)),
+                       theme(axis.text.y = element_text(hjust=1, size = 14, angle = 0)),
+                       theme(panel.border = element_blank(), panel.grid.major = element_blank(), 
+                             panel.background = element_blank(),panel.grid.minor = element_blank(), 
+                             axis.line = element_line(colour = 'black')))
+
+source('~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S//Scripts/pairwise.adonis.r')
+
+```
+
+```{R - Subset data for Test1}
+library(tidyverse)
+library(vegan)
+library(dplyr)
+library(reshape2)
+
+Drains <- asv_rarefy30k_long %>% filter(Distance_Offshore %in% c("Drain"))
+Nearshore <- asv_rarefy30k_long %>% filter(Distance_Offshore %in% c('Nearhsore'))
+Offshore250m <- asv_rarefy30k_long %>% filter(Distance_Offshore %in% c("250m_offshore"))
+Offshore500m <- asv_rarefy30k_long %>% filter(Distance_Offshore %in% c("500m_offshore"))
+RBE <- asv_rarefy30k_long %>% filter(Distance_Offshore %in% c("RBE"))
+Seawater <- rbind(Nearshore,Offshore250m,Offshore500m,RBE)
+```
+
+```{R - Test 1: Water samples dry vs. wet -> significant?}
+Seawater.Test1 <- Seawater %>% filter(!(Weather %in% "3.8mm_rainfall"))
+Seawater.Test1 <- Seawater.Test1 %>% filter(!(Weather %in% "Post-rainfall"))
+Seawater.Test1 <- Seawater.Test1 %>% filter((ASV_name %in% "B1000000002"))
+to_remove <- c("RBW121", "RBW123","RBW124","RBW122")
+Seawater.Test1 <- Seawater.Test1 %>% filter(!(SampleID %in% to_remove))
+Seawater.Test1_subset <- Seawater.Test1 %>% dplyr::select(ASV_name, Abundance_Vegan_Rarefied, SampleID)
+Seawater.Test1_subset <- Seawater.Test1_subset %>% filter(!Abundance_Vegan_Rarefied ==0)
+Seawater.Test1.asvs.wide.OFG <- reshape2::dcast(Seawater.Test1_subset , SampleID~ASV_name, value.var = "Abundance_Vegan_Rarefied", fill=0)
+rownames(Seawater.Test1.asvs.wide.OFG) <- Seawater.Test1.asvs.wide.OFG$SampleID
+Seawater.Test1_nmds_df <- Seawater.Test1.asvs.wide.OFG [,-c(1)]
+```
+
+```{r Test 1: Water samples dry vs. wet -> significant? NMDS}
+Seawater.Test1.nMDS <- metaMDS(Seawater.Test1_nmds_df, distance = "bray", try =99, trymax=100, autotransform = F)
+#stressplot(Seawater.Test1.nMDS)
+#plot(Seawater.Test1.nMDS)
+names(Seawater.Test1.nMDS)
+Seawater.Test1.nMDS.points <- cbind(Seawater.Test1.asvs.wide.OFG[,c(1)], as.data.frame(Seawater.Test1.nMDS$points))
+colnames(Seawater.Test1.nMDS.points)[1] <- "SampleID"
+Seawater.Test1.nMDS.points <- Seawater.Test1.nMDS.points %>% mutate(code=as.character(SampleID)) %>% left_join(sample_data)
+Seawater.Test1.nMDS.points$Transect <- as.character(Seawater.Test1.nMDS.points$Transect)
+
+```
+
+```{r Test 1: Water samples dry vs. wet -> significant? MDS}
+library(tidyverse)
+MDS.Seawater.Test1 <- ggplot(Seawater.Test1.nMDS.points) + 
+   geom_point(aes(x=MDS1, y=MDS2, color = Weather, size = 20)) +
+  #geom_text(aes(label=SampleID),hjust=0.6, vjust=0) + 
+  scale_colour_manual(values=c("43mm_rainfall"="#4ddded", "Pre-rainfall"="#e6d942")) +
+  NathanTheme
+MDS.Seawater.Test1
+```
+
+```{r Test 1: Water samples dry vs. wet -> significant? Pairwise Adonis}
+Seawater.Test1.Adonis_df <- Seawater.Test1.asvs.wide.OFG %>% left_join(sample_data)
+Seawater.Test1.Adonis_matrix <- as.matrix(Seawater.Test1.Adonis_df[,-c(1,3:18)])
+rownames(Seawater.Test1.Adonis_matrix) <- Seawater.Test1.Adonis_df$SampleID
+Seawater.Test1.Adonis <- pairwise.adonis(Seawater.Test1.Adonis_matrix, Seawater.Test1.Adonis_df$Weather, p.adjust.m = "bonferroni")
+Seawater.Test1.Adonis <- adonis(Seawater.Test1.Adonis_matrix ~ Seawater.Test1.Adonis_df$Weather, p.adjust.m = "bonferroni")
+Seawater.Test1.Adonis
+
+```
+
+```{r plot}
+Plot <- Seawater.Test1 %>% ggplot(aes(x=Weather, y= Abundance_Vegan_Rarefied, fill=(Family))) + 
+  geom_bar(stat='identity', colour = 'black') +
+  guides(fill = guide_legend(ncol=3)) +
+  labs( x= 'Location', y= 'Relative Abundance') +
+  NathanTheme
+Plot
+```
+
+```{r - Test2 Do the water samples differ from each other during dry weather?}
+Test2 <- Seawater %>% filter(Day %in% c("D1"))
+Test2 <- Test2 %>% filter(!Location%in% c("C1.1"))
+Test2 <- Test2 %>% filter(!Location%in% c("C1.2"))
+Test2 <- Test2 %>% filter(!Location%in% c("C1.3"))
+Test2 <- Test2 %>% filter(!Location%in% c("SW2.1"))
+Test2_subset <- Test2 %>% dplyr::select(ASV_name, Abundance_Vegan_Rarefied, SampleID)
+Test2_subset <- Test2_subset %>% filter(!Abundance_Vegan_Rarefied ==0)
+Test2.asvs.wide.OFG <- reshape2::dcast(Test2_subset , SampleID~ASV_name, value.var = "Abundance_Vegan_Rarefied", fill=0)
+rownames(Test2.asvs.wide.OFG) <- Test2.asvs.wide.OFG$SampleID
+Test2_nmds_df <- Test2.asvs.wide.OFG [,-c(1)]
+```
+
+```{r - Test2 Do the water samples differ from each other during dry weather? NMDS}
+Test2.nMDS <- metaMDS(Test2_nmds_df, distance = "bray", try =99, trymax=100, autotransform = F)
+#stressplot(Test2.nMDS)
+#plot(Test2.nMDS)
+names(Test2.nMDS)
+Test2.nMDS.points <- cbind(Test2.asvs.wide.OFG[,c(1)], as.data.frame(Test2.nMDS$points))
+colnames(Test2.nMDS.points)[1] <- "SampleID"
+Test2.nMDS.points <- Test2.nMDS.points %>% mutate(code=as.character(SampleID)) %>% left_join(sample_data)
+Test2.nMDS.points$Transect <- as.character(Test2.nMDS.points$Transect)
+```
+
+```{r - Test2 Do the water samples differ from each other during dry weather? MDS}
+library(tidyverse)
+MDS.Test2 <- ggplot(Test2.nMDS.points, aes(x=MDS1, y=MDS2, color = `Transect`)) + 
+  geom_point(aes(size=0.4, alpha=0.5)) + theme_bw() + 
+  #geom_text(aes(label=SampleID),hjust=0.6, vjust=0) + 
+  scale_colour_manual(values=c(colours)) +
+  NathanTheme
+MDS.Test2
+```
+
+```{r - Test2 Do the water samples differ from each other during dry weather? Pairwise Adonis}
+Test2.Adonis_df <- Test2.asvs.wide.OFG %>% left_join(sample_data)
+Test2.Adonis_matrix <- as.matrix(Test2.Adonis_df[,-c(1,3536:3548)])
+rownames(Test2.Adonis_matrix) <- Test2.Adonis_df$SampleID
+Test2.Adonis <- pairwise.adonis(Test2.Adonis_matrix, Test2.Adonis_df$Location, p.adjust.m = "bonferroni")
+```
+
+```{R - Test 3 Are the drains different from each other?}
+Drain.3.List <- Drains %>% filter(Location %in% c("D3.0","D10.0")) %>% distinct(SampleID, .keep_all = TRUE)
+Drains.Test3_subset <- Drains %>% filter(!SampleID %in% c("RBW013","RBW014","RBW015","RBW061","RBW062","RBW063","RBW118","RBW103","RBW104","RBW105"))
+Drains.Test3_subset <- Drains.Test3_subset %>% dplyr::select(ASV_name, Abundance_Vegan_Rarefied, SampleID)
+Drains.Test3_subset <- Drains.Test3_subset %>% filter(!Abundance_Vegan_Rarefied ==0)
+Drains.Test3.asvs.wide.OFG <- reshape2::dcast(Drains.Test3_subset , SampleID~ASV_name, value.var = "Abundance_Vegan_Rarefied", fill=0)
+rownames(Drains.Test3.asvs.wide.OFG) <- Drains.Test3.asvs.wide.OFG$SampleID
+Drains.Test3_nmds_df <- Drains.Test3.asvs.wide.OFG [,-c(1)]
+```
+
+```{r Test 3 Are the drains different from each other? NMDS}
+Drains.Test3.nMDS <- metaMDS(Drains.Test3_nmds_df, distance = "bray", try =99, trymax=100, autotransform = F)
+#stressplot(Drains.Test3.nMDS)
+#plot(Drains.Test3.nMDS)
+names(Drains.Test3.nMDS)
+Drains.Test3.nMDS.points <- cbind(Drains.Test3.asvs.wide.OFG[,c(1)], as.data.frame(Drains.Test3.nMDS$points))
+colnames(Drains.Test3.nMDS.points)[1] <- "SampleID"
+Drains.Test3.nMDS.points <- Drains.Test3.nMDS.points %>% mutate(code=as.character(SampleID)) %>% left_join(sample_data)
+Drains.Test3.nMDS.points$Transect <- as.character(Drains.Test3.nMDS.points$Transect)
+```
+
+```{r Test 3 Are the drains different from each other? MDS}
+library(tidyverse)
+MDS.Drains.Test3 <- ggplot(Drains.Test3.nMDS.points) + 
+  geom_point(aes(x=MDS1, y=MDS2, color = `Location`, shape = Weather, size = 20)) +
+  #geom_text(aes(label=SampleID),hjust=0.6, vjust=0) + 
+  #scale_colour_manual(values=c("D2"="#bee947", "D3"="#4ddded", "D1"="#e6d942","D4"="#6de8b6")) +
+  NathanTheme
+MDS.Drains.Test3
+```
+
+```{r Test 3 Are the drains different from each other? Pairwise Adonis}
+Drains.Test3.Adonis_df <- Drains.Test3.asvs.wide.OFG %>% left_join(sample_data)
+Drains.Test3.Adonis_matrix <- as.matrix(Drains.Test3.Adonis_df[,-c(1,12080:12095)])
+rownames(Drains.Test3.Adonis_matrix) <- Drains.Test3.Adonis_df$SampleID
+Drains.Test3.Adonis.Day <- pairwise.adonis(Drains.Test3.Adonis_matrix, Drains.Test3.Adonis_df$Day, p.adjust.m = "bonferroni")
+Drains.Test3.Adonis.Drain <- adonis(Drains.Test3.Adonis_matrix ~ Drains.Test3.Adonis_df$Location, p.adjust.m = "bonferroni")
+Drains.Test3.pwAdonis.Drain <- pairwise.adonis(Drains.Test3.Adonis_matrix, Drains.Test3.Adonis_df$Location, p.adjust.m = "bonferroni")
+
+summary.pwadonis(Drains.Test3.Adonis.Drain)
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+write.csv(Drains.Test3.pwAdonis.Drain, "Drains.Test3.pwAdonis.Drain.csv")
+```
+
+```{R - Test 4 Seawater V Drains}
+Drains.filt <- Drains %>% filter(Weather %in% c("Pre-rainfall"))
+Test4 <- rbind(Seawater,Drains.filt)
+Test4_subset <- Test4 %>% dplyr::select(ASV_name, Abundance_Vegan_Rarefied, SampleID)
+Test4_subset <- Test4_subset %>% filter(!Abundance_Vegan_Rarefied ==0)
+Test4.asvs.wide.OFG <- reshape2::dcast(Test4_subset , SampleID~ASV_name, value.var = "Abundance_Vegan_Rarefied", fill=0)
+rownames(Test4.asvs.wide.OFG) <- Test4.asvs.wide.OFG$SampleID
+Test4_nmds_df <- Test4.asvs.wide.OFG [,-c(1)]
+```
+
+```{r Test 4 Test 4 Seawater V Drains NMDS}
+Test4.nMDS <- metaMDS(Test4_nmds_df, distance = "bray", try =99, trymax=100, autotransform = F)
+#stressplot(Test4.nMDS)
+#plot(Test4.nMDS)
+names(Test4.nMDS)
+Test4.nMDS.points <- cbind(Test4.asvs.wide.OFG[,c(1)], as.data.frame(Test4.nMDS$points))
+colnames(Test4.nMDS.points)[1] <- "SampleID"
+Test4.nMDS.points <- Test4.nMDS.points %>% mutate(code=as.character(SampleID)) %>% left_join(sample_data)
+Test4.nMDS.points$Transect <- as.character(Test4.nMDS.points$Transect)
+```
+
+```{r Test 4 Test 4 Seawater V Drains MDS}
+library(tidyverse)
+MDS.Test4 <- ggplot(Test4.nMDS.points, aes(x=MDS1, y=MDS2, color = `Distance_Offshore`)) + 
+  geom_point(aes(size=0.4, alpha=0.5)) + 
+  NathanTheme
+MDS.Test4
+```
+
+```{r Test 4 Test 4 Seawater V Drains Pairwise Adonis}
+Test4.Adonis_df <- Test4.asvs.wide.OFG %>% left_join(sample_data)
+Test4.Adonis_matrix <- as.matrix(Test4.Adonis_df[,-c(1,11554:11567)])
+rownames(Test4.Adonis_matrix) <- Test4.Adonis_df$SampleID
+Test4.pwAdonis <- pairwise.adonis(Test4.Adonis_matrix, Test4.Adonis_df$Distance_Offshore, p.adjust.m = "bonferroni")
+Test4.Adonis <- adonis(Test4.Adonis_matrix ~ Test4.Adonis_df$Distance_Offshore, p.adjust.m = "bonferroni")
+summary.pwadonis(Test4.Adonis)
+
+```
