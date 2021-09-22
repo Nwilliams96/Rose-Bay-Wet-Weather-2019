@@ -1,0 +1,87 @@
+```{r Phylo object}
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+sample_data <- read_csv('SMD.csv')
+asv_cleaned_long <- read_csv("asv_cleaned_long.csv")
+
+#Make data frames appropriate for Phyloseq
+abund.vars <- c('FGID', 'SampleID', "Abundance")
+Abundance <- asv_cleaned_long %>% select(abund.vars) %>% distinct()
+Abundance.spread <- Abundance %>% spread(key='SampleID', value='Abundance', fill=0)
+
+taxonomy.vars <- c('ASV_name', 'Kingdom', 'Phylum', 'Class','Order','Family', 'Genus', 'Species','FGID', 'ASV')
+taxonomy <- asv_cleaned_long %>% select(taxonomy.vars) %>% distinct()
+
+#Make the phyloseq obj
+OTU = otu_table(Abundance.spread[2:ncol(Abundance.spread)], taxa_are_rows = TRUE)
+TAX = tax_table(taxonomy)
+
+
+#Sample_Data
+sample.vars <- c("SampleID","Location","Day","Transect","Site","mycl175","mycl170","mycl230","mycl275","mycl575","Location.Day","T.Day","Type")
+vars <- sample_data[sample.vars]
+vars <- distinct(vars)
+rownames(vars) <- vars$SampleID
+sampledata = sample_data(data.frame(vars))
+sampledata
+sam_data <- sampledata
+
+physeq = phyloseq(OTU, TAX, sam_data)
+```
+
+```{R Alpha Diversity - all}
+Plot <- plot_richness(Rarified, x="Site", color = "Day", measures=c("Shannon")) + geom_point(size=5, alpha=0.7) + NathanTheme2
+Plot
+```
+
+```{R - Alpha Diversity: Drains}
+RarifiedDrains <- subset_samples(Rarified, Transect == "0")
+RarifiedDrainsAlpha <- plot_richness(RarifiedDrains, x="Site", color = "Day", measures=c("Shannon")) + geom_point(size=5, alpha=0.7) + scale_y_continuous(limits = c(1, 5)) + NathanTheme2
+RarifiedDrainsAlpha
+
+richD = estimate_richness(RarifiedDrains)
+pairwise.wilcox.test(richD$Shannon, sample_data(RarifiedDrains)$Day)
+
+RarifiedDrainsD1 <- subset_samples(RarifiedDrains, Day == "D1")
+richD.D1 = estimate_richness(RarifiedDrainsD1)
+pairwise.wilcox.test(richD.D1$Shannon, sample_data(RarifiedDrainsD1)$Site)
+
+RarifiedDrainsD2 <- subset_samples(RarifiedDrains, Day == "D2")
+richD.D2 = estimate_richness(RarifiedDrainsD2)
+pairwise.wilcox.test(richD.D2$Shannon, sample_data(RarifiedDrainsD2)$Site)
+
+RarifiedDrainsD3 <- subset_samples(RarifiedDrains, Day == "D3")
+richD.D3 = estimate_richness(RarifiedDrainsD3)
+pairwise.wilcox.test(richD.D3$Shannon, sample_data(RarifiedDrainsD3)$Site)
+
+RarifiedDrainsD4 <- subset_samples(RarifiedDrains, Day == "D4")
+richD.D4 = estimate_richness(RarifiedDrainsD4)
+pairwise.wilcox.test(richD.D4$Shannon, sample_data(RarifiedDrainsD4)$Site)
+```
+
+```{R - Alpha Diverstiy: Transect 1}
+T1.obj <- subset_samples(Rarified, Transect == "1")
+T1Alpha <- plot_richness(T1.obj, x="Site", color = "Day", measures=c("Shannon")) + geom_point(size=5, alpha=0.7) + NathanTheme2 + scale_y_continuous(limits = c(1, 5))
+T1Alpha
+
+richT1 = estimate_richness(T1.obj)
+pairwise.wilcox.test(richT1$Shannon, sample_data(T1.obj)$Day)
+```
+
+```{R - Alpha Diverstiy: Transect 2}
+T2.obj <- subset_samples(Rarified, Transect == "2")
+T2Alpha <- plot_richness(T2.obj, x="Site", color = "Day", measures=c("Shannon")) + geom_point(size=5, alpha=0.7) + NathanTheme2 + scale_y_continuous(limits = c(1, 5))
+T2Alpha
+
+richT2 = estimate_richness(T2.obj)
+pairwise.wilcox.test(richT2$Shannon, sample_data(T2.obj)$Day)
+
+```
+
+```{R - Alpha Diverstiy: Transect 3}
+T3.obj <- subset_samples(Rarified, Transect == "3")
+T3Alpha <- plot_richness(T3.obj, x="Site", color = "Day", measures=c("Shannon")) + geom_point(size=5, alpha=0.7) + NathanTheme2 + scale_y_continuous(limits = c(1, 5))
+T3Alpha
+
+richT3 = estimate_richness(T3.obj)
+pairwise.wilcox.test(richT3$Shannon, sample_data(T3.obj)$Day)
+```
