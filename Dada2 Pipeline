@@ -1,0 +1,839 @@
+library(R.utils);
+library(dada2);
+library(ShortRead); packageVersion("ShortRead") # dada2 depends on this
+library(tidyverse); packageVersion("dplyr") # for manipulating data
+library(Biostrings);  # for creating the final graph at the end of the pipeline
+library(Hmisc); packageVersion("Hmisc") # for creating the final graph at the end of the pipeline
+library(plotly); packageVersion("plotly") # enables creation of interactive graphs, especially helpful for quality plots
+library(here); packageVersion("here");
+here();
+library(readr);
+library(Biostrings);
+library(DECIPHER); packageVersion("DECIPHER");
+
+home.dir <- ("/shared/c3/projects/Nathan.Williams.12034652/RoseBayWet/fastq_and_analysis");
+
+setwd(home.dir);
+
+#
+
+plates<-read_csv('Plates_CCL');
+
+##Plate 1
+
+args = commandArgs(trailingOnly=TRUE);
+#p=args[1];
+p=1; # Make sure to put a #here if running qsub -J 1-3, if this is not a qSUB you need to do each plate individually
+print(p);
+plates[p,1];
+
+#This is just making directories
+
+base.dir <- (paste0(home.dir, plates[p,1],"/"));
+dir.create(paste0(plates[p,1], ".CCL.exports"));
+export_dir <-(paste0(plates[p,1], ".CCL.exports/"));
+dir.create(paste0(export_dir, "pseudo.run_280_250"));
+trimmed_dir <-(paste0(plates[p,1], ".trimmed/"));
+dir.create(paste0(trimmed_dir));
+trunc_dir <-(paste0(export_dir, "pseudo.run_280_250"));
+trimLeng <-(paste0(trimmed_dir, "pseudo.run_280_250"));
+dir.create(paste0(trimLeng));
+
+#Part 2
+
+#2.1: UNZIP your files if needed, here the pattern is fastq if your files are still zipped they will be unzipped
+
+files.fp.gz <- list.files(path=base.dir,  pattern=".fastq.gz");
+data.fp.gz <- paste0(plates[p,1], "/");
+print(data.fp.gz);
+files.fp.gz;
+
+for (i in seq_along (files.fp.gz)){gunzip(filename=paste0(data.fp.gz,files.fp.gz[i]), overwrite=T)};
+              
+files.fp.gz <- list.files(path=base.dir,  pattern=".fastq");
+data.fp.gz <- paste0(plates[p,1], "/");
+print(data.fp.gz);
+
+#2.2 This makes an object for your Forward and Reverse reads. Sometimes you will need to change the extension "_R1_001.fastq" to suit your files"
+
+fnFs <- sort(list.files(data.fp.gz, pattern="_R1.fastq", full.names = TRUE));
+fnRs <- sort(list.files(data.fp.gz, pattern="_R2.fastq", full.names = TRUE));
+
+#2.3
+
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1);
+
+#2.4
+
+fwd.plot.quals <- plotQualityProfile(fnFs[1:6])
+ggsave(file = paste0(export_dir,"fwd.qualplot.plate1.pdf"), fwd.plot.quals, device="pdf");
+
+#2.5
+
+rev.plot.quals <- plotQualityProfile(fnRs[1:6])
+ggsave(file = paste0(export_dir,"rev.qualplot.plate1.pdf"), rev.plot.quals, device="pdf");
+
+#2.6 Make your primers objects
+
+FWD <- "CCTACGGGNGGCWGCAG";  ## CHANGE ME to your forward primer sequence Bacteria 16S rRNA gene region V3-V4
+REV <- "GACTACHVGGGTATCTAATCC"; ## CHANGE ME...Bacteria 16S rRNA gene region V3-V4
+
+#2.7 ????
+
+allOrients <- function(primer) {
+    # Create all orientations of the input sequence
+    require(Biostrings)
+    dna <- DNAString(primer)  # The Biostrings works w/ DNAString objects rather than character vectors
+    orients <- c(Forward = dna, Complement = complement(dna), Reverse = reverse(dna), 
+        RevComp = reverseComplement(dna))
+    return(sapply(orients, toString))  # Convert back to character vector
+}
+
+#2.8 ?????
+
+FWD.orients <- allOrients(FWD);
+REV.orients <- allOrients(REV);
+
+fnFs.filtN <- file.path(trimmed_dir, "filtN", basename(fnFs)); # Put N-filterd files in filtN/ subdirectory
+fnRs.filtN <- file.path(trimmed_dir, "filtN", basename(fnRs));
+filterAndTrim(fnFs, fnFs.filtN, fnRs, fnRs.filtN, maxN = 0, multithread = 10, compress=F);
+
+passed.filtN <- file.exists(fnFs.filtN) # TRUE/FALSE vector of which samples passed the filter
+fnFs.filtN <- fnFs.filtN[passed.filtN] # Keep only those samples that passed the filter
+fnFs <- fnFs[passed.filtN] # Keep only those samples that passed the filter
+fnRs.filtN <- fnRs.filtN[passed.filtN] # Keep only those samples that passed the filter
+fnRs <- fnRs[passed.filtN] # Keep only those samples that passed the filter
+
+primerHits <- function(primer, fn) {
+    # Counts number of reads in which the primer is found
+    nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+    return(sum(nhits > 0));
+}
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filtN[[1]]), 
+    FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.filtN[[1]]), 
+    REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.filtN[[1]]), 
+    REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.filtN[[1]]));
+
+cutadapt <- "/shared/c3/apps/anaconda3/bin/cutadapt"; # This is the path for the HPC
+#cutadapt <- "/usr/bin/cutadapt"; # this is the path for the FAST machine BETH/MARTIN
+
+data.fp <- paste0(trimmed_dir, "filtN");
+
+#system2(cutadapt, args = "--version"); # Run shell commands from R
+
+path.cut <- file.path(trimmed_dir, "cutadapt");
+if(!dir.exists(path.cut)) dir.create(path.cut);
+fnFs.cut <- file.path(path.cut, basename(fnFs));
+fnRs.cut <- file.path(path.cut, basename(fnRs));
+
+FWD.RC <- dada2:::rc(FWD);
+REV.RC <- dada2:::rc(REV);
+# Trim FWD and the reverse-complement of REV off of R1 (forward reads)
+R1.flags <- paste("-g", FWD, "-a", REV.RC);
+# Trim REV and the reverse-complement of FWD off of R2 (reverse reads)
+R2.flags <- paste("-G", REV, "-A", FWD.RC);
+
+# Run Cutadapt
+for(i in seq_along(fnFs)) {
+  system2(cutadapt, args = c(R1.flags, R2.flags, "-n", 2, # -n 2 required to remove FWD and REV from reads
+                             "-o", fnFs.cut[i], "-p", fnRs.cut[i], # output files
+                             fnFs.filtN[i], fnRs.filtN[i])) # input files Default error rate: 0.1
+}
+
+data.fp <- paste0(trimmed_dir, "cutadapt");
+
+##Check again how many primers are remaining after cutadapt - should be 0s but can have some remaining which is OK.
+primerHits <- function(primer, fn) {
+    # Counts number of reads in which the primer is found
+    nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+    return(sum(nhits > 0));
+}
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.cut[[1]]), 
+    FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.cut[[1]]), 
+    REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.cut[[1]]), 
+    REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.cut[[1]]));
+
+####Good stopping point
+
+
+
+
+#STEP5: Dada2 trim step (CHANGE TRIM lengths in this step!)
+#here you are renaming your new files to be sample name_R1_trim.fastq, no need to change
+trimFs <- file.path(trimLeng, paste0(sample.names, "_R1_trim.fastq"));
+trimRs <- file.path(trimLeng, paste0(sample.names, "_R2_trim.fastq"));
+names(trimFs) <- sample.names;
+names(trimRs) <- sample.names;
+head(sample.names);
+
+#Optimisation
+
+#base.dir <- (paste0(home.dir, plates[p,1]));
+#dir.create(paste0(plates[p,1], ".CCL.exports"));
+#export_dir <-(paste0(plates[p,1], ".CCL.exports/"));
+#dir.create(paste0(export_dir, "pseudo.run_280_250"));
+#trimmed_dir <-(paste0(plates[p,1], ".trimmed/"));
+#dir.create(paste0(trimmed_dir));
+#trunc_dir <-(paste0(export_dir, "pseudo.run_280_250"));
+#trimLeng <-(paste0(trimmed_dir, "pseudo.run_280_250"));
+#dir.create(paste0(trimLeng));
+
+
+out <- filterAndTrim(fnFs.cut, trimFs, fnRs.cut, trimRs, truncLen=c(280,250),
+              maxN=0, maxEE=c(2,6), truncQ=6, rm.phix=TRUE,
+              compress=FALSE, multithread=10, minLen = 50, matchIDs=TRUE); # On Windows set multithread=FALSE
+head(out);
+
+#Optimisation
+
+saveRDS(out, file = paste0(trunc_dir,"/", "out.RDS"), ascii = FALSE, version = NULL,
+        compress = TRUE, refhook = NULL)
+        
+passed.trim <- file.exists(trimFs); # TRUE/FALSE vector of which samples passed the filter
+trimFs <- trimFs[passed.trim]; # Keep only those samples that passed the filter
+trimRs <- trimRs[passed.trim]; # Keep only those samples that passed the filter
+
+data.fp <- paste0(trimLeng);
+
+errF <- learnErrors(trimFs, nbases =1e8, verbose=TRUE, multithread=10, MAX_CONSIST=20);
+errR <- learnErrors(trimRs, nbases =1e8, verbose=TRUE, multithread=10, MAX_CONSIST=20);
+
+fwd.plot.errors <- plotErrors(errF, nominalQ=TRUE);
+ggsave(file = paste0(trunc_dir,"/","fwd.errors.pdf"), fwd.plot.errors, width = 10, height = 10, device="pdf");
+rev.plot.errors <- plotErrors(errR, nominalQ=TRUE);
+ggsave(file = paste0(trunc_dir,"/","rev.errors.pdf"), rev.plot.errors, width = 10, height = 10, device="pdf");
+
+
+#STEP7:  DEREPLICATION, DADA2 Step, MERGE, and COLLAPSE if the same! SAVE RDS
+derepFs<-derepFastq(trimFs);
+derepRs<-derepFastq(trimRs);
+
+dadaFs <- dada(derepFs, err=errF, multithread=10, pool="pseudo");
+dadaRs <- dada(derepRs, err=errR, multithread=10, pool="pseudo"); 
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, minOverlap = 10, maxMismatch = 1, verbose=TRUE);
+
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]]);
+seqtab <- makeSequenceTable(mergers);
+dim(seqtab);
+saveRDS(seqtab, file = paste0(trunc_dir,"/",plates[p,1],"seqtab.RDS"), ascii = FALSE, version = NULL,
+        compress = TRUE, refhook = NULL)
+
+#STEP8: Dada2 chimera removal step, using 2 different thresholds for removal (minFoldParentOverAbundance=4 and 1), 1 is standard
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)));
+seqtab.nochim.4 <- removeBimeraDenovo(seqtab, method="consensus", multithread=10, verbose=TRUE, minFoldParentOverAbundance=4);
+dim(seqtab.nochim.4);
+sum(seqtab.nochim.4)/sum(seqtab);
+
+#STEP9: WRITE TABLES!
+#changeG information in the following CSVs to match what you used in step 5 so that you have a record of your parameters when you should need it
+
+getN <- function(x) sum(getUniques(x));
+track.4 <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim.4));
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track.4) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.4");
+rownames(track.4) <- sample.names;
+head(track.4);
+
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+track.table4 <- as.data.frame(t(track.4));
+track.table4$truncF <- 280;
+track.table4$truncR <- 250;
+track.table4$EE <- 2.6;
+track.table4$truncQ <- 6;
+track.table4$pooled <- "pseudo";
+track.table4$Bimera <- 4;
+track.table4$nochim4_precent <- sum(seqtab.nochim.4)/sum(seqtab);
+write.csv(track.table4, file = paste0(trunc_dir, "/",plates[p,1],".trackB4.csv"), col.names=NA);
+
+
+table(nchar(getSequences(seqtab)));
+seqtab.nochim.1 <- removeBimeraDenovo(seqtab, method="consensus", multithread=10, verbose=TRUE, minFoldParentOverAbundance=1);
+dim(seqtab.nochim.1);
+sum(seqtab.nochim.1)/sum(seqtab);
+
+track.1 <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim.1));
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track.1) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.1");
+rownames(track.1) <- sample.names;
+head(track.1);
+
+track.table1 <- as.data.frame(t(track.1));
+track.table1$truncF <- 280;
+track.table1$truncR <- 250;
+track.table1$EE <- 2.6;
+track.table1$truncQ <- 6;
+track.table1$pooled <- "pseudo";
+track.table1$Bimera <- 1;
+track.table1$nochim1_precent <- sum(seqtab.nochim.1)/sum(seqtab);
+write.csv(track.table1, file = paste0(trunc_dir,"/",plates[p,1],".trackB1.csv"), col.names=NA);
+
+
+#TRACK READS THROUGH THE PIPELINE FOR CHIM.4
+
+getN <- function(x) sum(getUniques(x));
+track.4 <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim.4));
+
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track.4) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.4");
+rownames(track.4) <- sample.names;
+head(track.4);
+
+track.4 <- as.data.frame(t(track.4));
+
+plotLengthDistro <- function(st) {
+  require(ggplot2)
+  tot.svs <- table(nchar(colnames(st)))
+  tot.reads <- tapply(colSums(st), nchar(colnames(st)), sum)
+  df <- data.frame(Length=as.integer(c(names(tot.svs), names(tot.reads))),
+                   Count=c(tot.svs, tot.reads),
+                   Type=rep(c("SVs", "Reads"), times=c(length(tot.svs), length(tot.reads))))
+  pp <- ggplot(data=df, aes(x=Length, y=Count, color=Type)) + geom_point() + facet_wrap(~Type, scales="free_y") + theme_bw() + xlab("Amplicon Length")
+  pp
+  }
+
+plotLengthDistro(seqtab.nochim.4);
+plotLengthDist.log10.chim4 <-plotLengthDistro(seqtab.nochim.4) + scale_y_log10();
+
+ggsave(plotLengthDist.log10.chim4, file = paste0(trunc_dir,"/","plotLengthDist.log10.chim4.pdf"), width = 10, height = 10, device="pdf")
+
+sample <- rownames(seqtab.nochim.4);
+sequence <- colnames(seqtab.nochim.4);
+
+#check the col names and check how many ASVs that you are losing in the pipeline
+colnames(seqtab.nochim.4);
+#what % had chimera's vs non-chimeras?
+sum(seqtab.nochim.4)/sum(seqtab);
+#this is the %
+sum(rev(sort(colSums(seqtab.nochim.4)))[1:1000])/sum(colSums(seqtab.nochim.4));
+
+# Flip table
+seqtab.t.4 <- as.data.frame(t(seqtab.nochim.4));
+write.csv(seqtab.t.4, file = paste0(trunc_dir,"/",plates[p,1],".ASV.table.chim.4.csv"), col.names=NA);
+
+# tracking reads by percentage
+
+track.4 <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim.4));
+colnames(track.4) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.4");
+rownames(track.4) <- sample.names;
+head(track.4);
+
+track_pct <- track.4 %>% 
+  data.frame() %>%
+  mutate(Sample = rownames(.),
+         filtered_pct = ifelse(filtered == 0, 0, 100 * (filtered/input)),
+         denoisedF_pct = ifelse(denoisedF == 0, 0, 100 * (denoisedF/filtered)),
+         denoisedR_pct = ifelse(denoisedR == 0, 0, 100 * (denoisedR/filtered)),
+         merged_pct = ifelse(merged == 0, 0, 100 * merged/((denoisedF + denoisedR)/2)),
+         nonchim_pct = ifelse(nonchim.4 == 0, 0, 100 * (nonchim.4/merged)),
+         total_pct = ifelse(nonchim.4 == 0, 0, 100 * nonchim.4/input)) %>%
+  select(Sample, ends_with("_pct"));
+
+
+track_pct_avg <- track_pct %>% summarize_at(vars(ends_with("_pct")), 
+                                            list(avg = mean));
+head(track_pct_avg);
+
+track_pct_med <- track_pct %>% summarize_at(vars(ends_with("_pct")), 
+                                            list(avg = stats::median));
+head(track_pct_avg);
+
+head(track_pct_med);
+
+track_plot.4 <- track.4 %>% 
+  data.frame() %>%
+  mutate(Sample = rownames(.)) %>%
+  gather(key = "Step", value = "Reads", -Sample) %>%
+  mutate(Step = factor(Step, 
+                       levels = c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.4"))) %>%
+  ggplot(aes(x = Step, y = Reads)) +
+  geom_line(aes(group = Sample), alpha = 0.2) +
+  geom_point(alpha = 0.5, position = position_jitter(width = 0)) + 
+  stat_summary(fun.y = median, geom = "line", group = 1, color = "steelblue", size = 1, alpha = 0.5) +
+  stat_summary(fun.y = median, geom = "point", group = 1, color = "steelblue", size = 2, alpha = 0.5) +
+  stat_summary(fun.data = median_hilow, fun.args = list(conf.int = 0.5), 
+               geom = "ribbon", group = 1, fill = "steelblue", alpha = 0.2) +
+  geom_label(data = t(track_pct_avg[1:5]) %>% data.frame() %>% 
+               rename(Percent = 1) %>%
+               mutate(Step = c("filtered", "denoisedF", "denoisedR", "merged", "nonchim.4"),
+                      Percent = paste(round(Percent, 2), "%")),
+             aes(label = Percent), y = 1.1 * max(track.4[,2])) +
+  geom_label(data = track_pct_avg[6] %>% data.frame() %>%
+               rename(total = 1),
+             aes(label = paste("Total\nRemaining:\n", round(track_pct_avg[1,6], 2), "%")), 
+             y = mean(track.4[,6]), x = 6.5) +
+  expand_limits(y = 1.1 * max(track.4[,2]), x = 7) +
+  theme_classic();
+
+ggsave(track_plot.4, file = paste0(trunc_dir,"/","track_plot.4.pdf"), width = 10, height = 10, device="pdf")
+
+#TRACK READS THROUGH THE PIPELINE FOR CHIM.8
+
+getN <- function(x) sum(getUniques(x));
+track.1 <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim.1));
+
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track.1) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.1");
+rownames(track.1) <- sample.names;
+head(track.1);
+
+track.1 <- as.data.frame(t(track.1));
+
+plotLengthDistro <- function(st) {
+  require(ggplot2)
+  tot.svs <- table(nchar(colnames(st)))
+  tot.reads <- tapply(colSums(st), nchar(colnames(st)), sum)
+  df <- data.frame(Length=as.integer(c(names(tot.svs), names(tot.reads))),
+                   Count=c(tot.svs, tot.reads),
+                   Type=rep(c("SVs", "Reads"), times=c(length(tot.svs), length(tot.reads))))
+  pp <- ggplot(data=df, aes(x=Length, y=Count, color=Type)) + geom_point() + facet_wrap(~Type, scales="free_y") + theme_bw() + xlab("Amplicon Length")
+  pp
+  }
+
+plotLengthDistro(seqtab.nochim.1);
+plotLengthDist.log10.chim.1 <-plotLengthDistro(seqtab.nochim.1) + scale_y_log10();
+
+ggsave(plotLengthDist.log10.chim.1, file = paste0(trunc_dir,"/","plotLengthDist.log10.chim.1.pdf"), width = 10, height = 10, device="pdf")
+
+sample <- rownames(seqtab.nochim.1);
+sequence <- colnames(seqtab.nochim.1);
+
+#check the col names and check how many ASVs that you are losing in the pipeline
+colnames(seqtab.nochim.1);
+#what % had chimera's vs non-chimeras?
+sum(seqtab.nochim.1)/sum(seqtab);
+#this is the %
+sum(rev(sort(colSums(seqtab.nochim.1)))[1:1000])/sum(colSums(seqtab.nochim.1));
+
+# Flip table
+seqtab.t.1 <- as.data.frame(t(seqtab.nochim.1));
+write.csv(seqtab.t.1, file = paste0(trunc_dir,"/",plates[p,1],".ASV.table.chim.1.csv"), col.names=NA);
+
+# tracking reads by percentage
+
+track.1 <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim.1));
+colnames(track.1) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.1");
+rownames(track.1) <- sample.names;
+head(track.1);
+
+track_pct <- track.1 %>% 
+  data.frame() %>%
+  mutate(Sample = rownames(.),
+         filtered_pct = ifelse(filtered == 0, 0, 100 * (filtered/input)),
+         denoisedF_pct = ifelse(denoisedF == 0, 0, 100 * (denoisedF/filtered)),
+         denoisedR_pct = ifelse(denoisedR == 0, 0, 100 * (denoisedR/filtered)),
+         merged_pct = ifelse(merged == 0, 0, 100 * merged/((denoisedF + denoisedR)/2)),
+         nonchim_pct = ifelse(nonchim.1 == 0, 0, 100 * (nonchim.1/merged)),
+         total_pct = ifelse(nonchim.1 == 0, 0, 100 * nonchim.1/input)) %>%
+  select(Sample, ends_with("_pct"));
+
+
+track_pct_avg <- track_pct %>% summarize_at(vars(ends_with("_pct")), 
+                                            list(avg = mean));
+head(track_pct_avg);
+
+track_pct_med <- track_pct %>% summarize_at(vars(ends_with("_pct")), 
+                                            list(avg = stats::median));
+head(track_pct_avg);
+
+head(track_pct_med);
+
+track_plot.1 <- track.1 %>% 
+  data.frame() %>%
+  mutate(Sample = rownames(.)) %>%
+  gather(key = "Step", value = "Reads", -Sample) %>%
+  mutate(Step = factor(Step, 
+                       levels = c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim.1"))) %>%
+  ggplot(aes(x = Step, y = Reads)) +
+  geom_line(aes(group = Sample), alpha = 0.2) +
+  geom_point(alpha = 0.5, position = position_jitter(width = 0)) + 
+  stat_summary(fun.y = median, geom = "line", group = 1, color = "steelblue", size = 1, alpha = 0.5) +
+  stat_summary(fun.y = median, geom = "point", group = 1, color = "steelblue", size = 2, alpha = 0.5) +
+  stat_summary(fun.data = median_hilow, fun.args = list(conf.int = 0.5), 
+               geom = "ribbon", group = 1, fill = "steelblue", alpha = 0.2) +
+  geom_label(data = t(track_pct_avg[1:5]) %>% data.frame() %>% 
+               rename(Percent = 1) %>%
+               mutate(Step = c("filtered", "denoisedF", "denoisedR", "merged", "nonchim.1"),
+                      Percent = paste(round(Percent, 2), "%")),
+             aes(label = Percent), y = 1.1 * max(track.1[,2])) +
+  geom_label(data = track_pct_avg[6] %>% data.frame() %>%
+               rename(total = 1),
+             aes(label = paste("Total\nRemaining:\n", round(track_pct_avg[1,6], 2), "%")), 
+             y = mean(track.1[,6]), x = 6.5) +
+  expand_limits(y = 1.1 * max(track.1[,2]), x = 7) +
+  theme_classic();
+
+ggsave(track_plot.1, file = paste0(trunc_dir,"/",plates[p,1],".track_plot.1.pdf"), width = 10, height = 10, device="pdf")
+
+#save RDS files of the seqtab files of importance:
+
+saveRDS(seqtab.nochim.4, file = paste0(trunc_dir,"/",plates[p,1],"seqtab.4.RDS"), ascii = FALSE, version = NULL,
+        compress = TRUE, refhook = NULL)
+saveRDS(seqtab.nochim.1, file = paste0(trunc_dir,"/",plates[p,1],"seqtab.1.RDS"), ascii = FALSE, version = NULL,
+        compress = TRUE, refhook = NULL)
+q()
+
+`````````
+
+library(Rcpp)
+library(dada2)
+rds.list.1 <- list() 
+rds.list.1 <- list.files(pattern='1.RDS', path='/shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/')
+rds.list.1
+merger <- list() # create empty list
+for (i in seq_along(rds.list.1)){
+  merger[[i]] <-readRDS(paste0('/shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/', rds.list.1[i]))
+}
+st.all.1 <- mergeSequenceTables(merger[[1]],merger[[2]],merger[[3]])
+col.st.200.chim1 <- collapseNoMismatch(st.all.1, minOverlap = 200,orderBy="abundance", verbose = T)
+saveRDS(col.st.200.chim1, "/shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/.chim1.rds")
+
+`````````
+```{r}
+#Assign taxonomy on the HPC
+#I suggest doing the first few steps interactively and then get to a place where you are just assigning taxonomy and you can move to a qsub
+
+
+#screen -S taxonCompileNathan
+#qsub -I -q c3b -l ncpus=11,mem=100GB,walltime=8:00:00
+#cd to your location where your file is
+#cd /shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/
+#module load devel/R-current;
+
+
+
+R
+library(R.utils);
+library(dada2);
+library(ShortRead); packageVersion("ShortRead") # dada2 depends on this
+library(tidyverse); packageVersion("dplyr") # for manipulating data
+library(Biostrings);  # for creating the final graph at the end of the pipeline
+library(Hmisc); packageVersion("Hmisc") # for creating the final graph at the end of the pipeline
+library(plotly); packageVersion("plotly") # enables creation of interactive graphs, especially helpful for quality plots
+library(here); packageVersion("here");
+here();
+library(readr);
+library(Biostrings);
+```
+
+
+```{r}
+chim4 <- readRDS('Nate_precollapse4.rds')
+
+collapsed.chim4 <- readRDS('Nate_collapsed4.rds')
+
+```
+```{r}
+sample <- rownames(chim4);
+sequence <- colnames(chim4);
+
+#check the col names and check how many ASVs that you are losing in the pipeline
+colnames(chim4);
+#this is the %
+sum(rev(sort(colSums(chim4)))[1:1000])/sum(colSums(chim4));
+
+# Flip table
+ASV.tablechim4 <- as.data.frame(t(chim4));
+#convert row names (which are presently sequences) to the first column in R
+library(data.table)
+setDT(ASV.tablechim4, keep.rownames = TRUE) []
+
+#rename your new first column ASV
+names(ASV.tablechim4)[1] <- "ASV"
+
+paste("The total number of ASVs represented in this data set is: ", length(unique(ASV.tablechim4$ASV)), sep="")
+ASV.tablechim4.df<-as.data.frame(ASV.tablechim4)
+```
+```{r}
+sample <- rownames(collapsed.chim4);
+sequence <- colnames(collapsed.chim4);
+
+#check the col names and check how many ASVs that you are losing in the pipeline
+colnames(collapsed.chim4);
+#this is the %
+sum(rev(sort(colSums(collapsed.chim4)))[1:1000])/sum(colSums(collapsed.chim4));
+
+# Flip table
+ASV.tablecollapsed.chim4 <- as.data.frame(t(collapsed.chim4));
+#convert row names (which are presently sequences) to the first column in R
+library(data.table)
+setDT(ASV.tablecollapsed.chim4, keep.rownames = TRUE) []
+
+#rename your new first column ASV
+names(ASV.tablecollapsed.chim4)[1] <- "ASV"
+
+paste("The total number of ASVs represented in this data set is: ", length(unique(ASV.tablecollapsed.chim4$ASV)), sep="")
+collapsed.chim4.df <- as.data.frame(ASV.tablecollapsed.chim4)
+
+collapsed.chim4.df.gather <- collapsed.chim4.df %>% gather(key='code', value='abund', -c('ASV'))
+
+chim4.total <- collapsed.chim4.df.gather %>% group_by(code) %>% summarise(sample_total=sum(abund))
+
+RB.chim4 <- collapsed.chim4.df.gather %>% full_join(chim4.total, 'code')
+RB.chim4 <- subset(RB.chim4, select = c(code, ASV, abund, sample_total))
+
+names(RB.chim4)[names(RB.chim4) == "abund"] <- "abund_chim4"
+names(RB.chim4)[names(RB.chim4) == "sample_total"] <- "sampleT_chim4"
+
+#NOW left join the chim.4 plates onto the chim.4 plate
+RB.Long2020aug09 <- RB.chim4  %>% left_join(RB.chim4, 'ASV'='ASV', 'code'='code')
+RB.Long2020aug09[is.na(RB.Long2020aug09)]<- 0
+RB.Long2020aug09$platecode <- "p1"
+
+RB.Long2020aug09 <- RB.Long2020aug09 %>% unite('code2', c("platecode","code"), remove=F, sep=';')
+
+paste("The total number of Samples represented in this data set is: ", length(unique(RB.Long2020aug09$code)), sep="")
+
+write_csv(as.data.frame(RB.Long2020aug09), "RB.Long2020aug09.csv");
+
+
+```
+
+```{r Taxonomy}
+##NOW you can assign taxonomy on the chim4 ASVs, this will assign everything then you can just left join so now you can copy the following into a .r script and then qsub it RB.Long2020aug09.csv this is what your ref file is called which will be used for taxonomy
+
+###before starting you must know how many ASVs are present in your RB.Long2020aug09.csv you can do this by reading it into R and then looking at how many rows are in the resulting file, this is how many ASVs are present - There are 179825 ASVs
+
+#nano a file called: do-taxaSil138.r, paste the following into your .r file
+
+######
+
+#####Silva138 tax file 1 on the hpc, nano this file and save as: do-taxaSil138.r
+
+library(tidyverse);
+library(dada2);
+
+args = commandArgs(trailingOnly=TRUE);
+
+p=args[1];
+
+print(p);
+
+if (!file.exists(paste0("taxaSilva138.NW.part.", p, ".csv"))){
+  refs<-read_csv('RB.Long2020aug09.csv');
+
+  n=1000;
+  nr<-nrow(refs);
+  print(nr);
+  refsplit<-split(refs, rep(1:ceiling(nr/n), each=n, length.out=nr));
+  print(length(refsplit));
+  taxa<- assignTaxonomy(seqs=refsplit[[p]]$ASV, refFasta='/shared/c3/bio_db/BPA/amplicons/uniques/arb/silva_nr_v138_train_set.fa', outputBootstraps=T, multithread=6, tryRC=T);
+  taxadf<- as.data.frame(taxa);
+  taxadf$ASV<-rownames(taxadf);
+  write_csv(taxadf, paste0("taxaSilva138.NW.part.", p, ".csv"));
+  head(taxadf);
+  q()
+}
+
+```
+
+```{bash Taxonomy}
+#now you have to nano a .sh file for the taxa called: taxa.sh
+#paste the following into this new file, NOTE you are calling up your previously made .r script which is called
+#do-taxaSil138.r
+#NOTE You have to change directories in this file to match your current working directory where your ref file = chim.1.ref.2020aug09.csv and .r files are located
+
+####.sh file NOTE the -J 1-18 this denotes how many files you will have when you divide your ref file
+#by 1000, this is splitting your ref ASVs into groups of 1000 ASVs per file so that it goes faster
+#that means that you have to take the total number of rows in your ref file and divide that by 1000
+#in this example my ref file as 85,666 ASVs, that means I need to have it divided into 86 files of 1000 each 
+
+########
+
+#!/bin/bash
+
+#PBS -J 1-18
+#PBS -N DADA2silva138
+#PBS -l ncpus=15
+#PBS -l mem=200GB
+#PBS -l walltime=02:00:00
+
+module load devel/R-current
+
+#module load devel/perl-current
+
+cd /shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/Taxonomy/
+echo "Job ID is ${PBS_JOB_ID}"
+echo "Job Array ID is ${PBS_ARRAY_INDEX}"
+echo "Timestamp is $(date +%F_%T)"
+echo "Directory is $(pwd)"
+echo "Running on host $(hostname)"
+echo "Working directory is ${PBS_O_WORKDIR}"
+echo "Job has the following nodes/cores:"
+cat ${PBS_NODEFILE}
+
+#This script runs the 2nd part of the dada2 pipeline to generate ASVs
+#It takes an input of paired illumina fastq files after they have been processed with cutadapt
+
+
+
+#PARAMETERS=$(awk -v line=${PBS_ARRAY_INDEX} '{if (NR == line) { print $0; };}' file.conf)
+
+date +%F_%T
+
+Rscript --verbose  /shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/Taxonomy/do-taxaSil138.r ${PBS_ARRAY_INDEX} > ${PBS_ARRAY_INDEX}.138taxa.out
+
+date +%F_%T
+
+#####NOW you can run this as a qsub by inputing the following
+#to do this you must have the following files present in one folder on the HPC
+#1) your reference file of ASVs called: cRB.Long2020aug09.csv
+#2) your .r file that is called do-taxaSil138.r
+#3) your .sh file that is called taxa.sh
+
+#run the qusub by doing the following: qsub -q c3b ./taxa.sh
+```
+
+```{r Species}
+######NOW you have to also annotate the SPECIES in the same way, you can do so in the same way and in the same folder, you just
+#need to make a new .r file and .sh file as follows:
+#######nano do-speciesSil138.NW.r#####
+
+library(tidyverse);
+library(dada2);
+
+args = commandArgs(trailingOnly=TRUE);
+p=args[1];
+print(p);
+
+if (!file.exists(paste0("species.v138.NW.part.", p, ".csv"))){
+  refs<-read_csv('RB.Long2020aug09.csv');
+
+  n=1000;
+  nr<-nrow(refs);
+  print(nr);
+  refsplit<-split(refs, rep(1:ceiling(nr/n), each=n, length.out=nr));
+  print(length(refsplit));
+  taxa<- assignSpecies(seqs=refsplit[[p]]$ASV, refFasta='/shared/c3/bio_db/BPA/amplicons/uniques/arb/silva_species_assignment_v138.fa', tryRC=T, allowMultiple=T);
+  taxadf<- as.data.frame(taxa);
+  taxadf$ASV<-rownames(taxadf);
+  write_csv(taxadf, paste0("species.v138.NW.part.", p, ".csv"));
+  head(taxadf);
+
+  q()
+}
+
+```
+
+
+```{bash Species}
+#######nano taxa.species.sh######
+#!/bin/bash
+
+#PBS -J 1-30
+#PBS -N SpeciesS138
+#PBS -l ncpus=15
+#PBS -l mem=200GB
+#PBS -l walltime=08:00:00
+
+module load devel/R-current
+
+#module load devel/perl-current
+
+cd /shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/Species
+echo "Job ID is ${PBS_JOB_ID}"
+echo "Job Array ID is ${PBS_ARRAY_INDEX}"
+echo "Timestamp is $(date +%F_%T)"
+echo "Directory is $(pwd)"
+echo "Running on host $(hostname)"
+echo "Working directory is ${PBS_O_WORKDIR}"
+echo "Job has the following nodes/cores:"
+cat ${PBS_NODEFILE}
+
+#This script runs the 2nd part of the dada2 pipeline to generate ASVs
+#It takes an input of paired illumina fastq files after they have been processed with cutadapt
+
+
+
+#PARAMETERS=$(awk -v line=${PBS_ARRAY_INDEX} '{if (NR == line) { print $0; };}' file.conf)
+
+date +%F_%T
+
+Rscript --verbose /shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/Species/do-speciesSil138.NW.r ${PBS_ARRAY_INDEX} > ${PBS_ARRAY_INDEX}.138species.out
+  
+date +%F_%T
+
+#########
+
+#####NOW you can run this as a qsub by inputing the following
+#to do this you must have the following files present in one folder on the HPC
+#1) your reference file of ASVs called: chim.1.ref.2020aug09.csv
+#2) your .r file that is called do-speciesSil138.NW.r
+#3) your .sh file that is called taxa.species.sh######
+
+#run the qusub by doing the following:
+#qsub -q c3b taxa.species.sh
+```
+
+```{r}
+#NOW You are almost done with your assigning! You should have 86 files that are called: taxaSilva138.arb.part.10.csv
+#AND another 86 files that are called species.v138.arb.part.1.csv. You have to compile them together to make one taxonomy file. I suggest you do this interactively.Open a screen inside of the same file that has all of these taxonomy files inside.
+  
+  #screen -S taxonCompile
+  #qsub -I -q c3b -l ncpus=4,mem=100GB,walltime=8:00:00
+  #qsub -I -l ncpus=4,mem=50GB,walltime=8:00:00
+  #cd to your location where your file is
+  #cd /shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/Taxonomy
+  #module load devel/R-current;
+  #R
+  
+  library(R.utils);
+  library(dada2);
+  library(ShortRead); packageVersion("ShortRead") # dada2 depends on this
+  library(tidyverse); packageVersion("dplyr") # for manipulating data
+  library(Biostrings);  # for creating the final graph at the end of the pipeline
+  library(Hmisc); packageVersion("Hmisc") # for creating the final graph at the end of the pipeline
+  library(plotly); packageVersion("plotly") # enables creation of interactive graphs, especially helpful for quality plots
+  library(here); packageVersion("here");
+  here();
+  library(readr);
+  library(Biostrings);
+  
+  plates <- read.csv(file = "Plates_RBW");
+  
+  #read in all Silva138 files, first read in all the files for Silva138 which has taxonomy to Genus level
+  #you named your files this above: taxaSilva138.NW.part.
+  
+  taxaSilva138<-list.files(pattern='taxaSilva138.NW.part.')
+  taxaSilva138.list<-list('vector', length(taxaSilva138))
+  taxaSilva138.list<- lapply(taxaSilva138, function(x) read_csv(x))
+  
+  taxaSilva138.bind<-list('vector', length(taxaSilva138.list))
+  for (i in seq_along(taxaSilva138.list)){
+    taxaSilva138.bind[[i]]<- taxaSilva138.list[[i]] %>% mutate('platecode'=names(taxaSilva138.list)[i])
+  }
+  taxaSilva138.bind<-bind_rows(taxaSilva138.bind[], .id = "column_label")
+  
+  taxaSilva138.bind$tax.Kingdom <- forcats::fct_explicit_na(taxaSilva138.bind$tax.Kingdom, 'k_unassigned')
+  taxaSilva138.bind$tax.Phylum <- forcats::fct_explicit_na(taxaSilva138.bind$tax.Phylum, 'p_unassigned')
+  taxaSilva138.bind$tax.Class <- forcats::fct_explicit_na(taxaSilva138.bind$tax.Class, 'c_unassigned')
+  taxaSilva138.bind$tax.Order <- forcats::fct_explicit_na(taxaSilva138.bind$tax.Order, 'o_unassigned')
+  taxaSilva138.bind$tax.Family <- forcats::fct_explicit_na(taxaSilva138.bind$tax.Family, 'f_unassigned')
+  taxaSilva138.bind$tax.Genus <- forcats::fct_explicit_na(taxaSilva138.bind$tax.Genus, 'g_unassigned')
+  #write the bind file which is all of the tax files bound together as one CSV file
+  write_csv(taxaSilva138.bind,'tax_1_Long.silva138.csv')
+  
+  
+#AND now do the same for your species files as follows:
+    #screen -S taxonCompileSpecies
+  
+  #you named your files this above: species.v138.arb.part.
+  
+  taxaSpecies138<-list.files(pattern='species.v138.NW.part.')
+  taxaSpecies138.list<-list('vector', length(taxaSpecies138))
+  taxaSpecies138.list<- lapply(taxaSpecies138, function(x) read_csv(x, guess_max = 300000))
+  
+  taxaSpecies138.bind<-list('vector', length(taxaSpecies138.list))
+  for (i in seq_along(taxaSpecies138.list)){
+    taxaSpecies138.bind[[i]]<- taxaSpecies138.list[[i]] %>% mutate('platecode'=names(taxaSpecies138.list)[i])
+  }
+  taxaSilva138.bind<-bind_rows(taxaSpecies138.bind[], .id = "column_label")
+  df <- as.data.frame(taxaSilva138.bind)
+  df$Genus <- forcats::fct_explicit_na(df$Genus, 'g_unassigned') #This step isn't working Error: `f` must be a factor (or character vector).
+  df$Species <- forcats::fct_explicit_na(df$Species, 'sp.')
+  #write the bind file which is all of the tax files bound together as one CSV file
+  write_csv(df,'tax_2_Long.Species138.csv')
+ 
+    
