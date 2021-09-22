@@ -1,0 +1,46 @@
+```{r Data import}
+library("readr")
+library("tidyverse")
+library("tidyr")
+library("data.table")
+library("ggplot2")
+
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+asv_rarefy30k_long <- read_csv("asv_rarefy30k_long.csv")
+df <-asv_rarefy30k_long  %>% dplyr::select(FGID, Abundance_Vegan_Rarefied, SampleID) %>% distinct() %>% pivot_wider(names_from = FGID, values_from = Abundance_Vegan_Rarefied, values_fill = 0)
+sample_data <- read_csv('SMD.rarefied.csv')
+```
+
+```{r Arrange data for Indicator Species Analysis}
+library("dplyr")
+#I added in sample metadata to the rarefied wide tables (with asv as the col name)
+pivot.meta  <- sample_data %>% dplyr::select(Ind1, SampleID) %>% left_join(df, 'SampleID')
+pivot.meta <- na.omit(pivot.meta)
+pivot.meta.mat <- as.matrix(pivot.meta[,-c(1,2)])
+head(pivot.meta.mat)
+#pivot.meta.mat2<-pivot.meta.mat[1:618,1:1000]
+rownames(pivot.meta.mat) <- pivot.meta$SampleID;
+pivot.meta.mat[1:10,1:10]
+```
+
+```{r Run the indicator species test}
+library("indicspecies")
+Indicator.Species = multipatt(pivot.meta.mat, as.factor(pivot.meta$Ind1), print.perm = TRUE, control = how(nperm=999));
+saveRDS(Indicator.Species , 'Indicator.Species.RDS')
+Indicator.Species$sign
+#we have to inspect the multipratt value sign 
+```
+
+```{r extract data}
+#extract table of stats
+indisp.sign <- as.data.table(Indicator.Species$sign, keep.rownames=TRUE)
+#add adjusted p-value
+indisp.sign[ ,p.value.bh:=p.adjust(p.value, method="BH")]
+#now can select only the indicators with adjusted significant p-values
+indisp.sign[p.value.bh<=0.05, ]
+head(indisp.sign)
+indisp.sign.df<-as.data.frame(indisp.sign)
+write_csv(as.data.frame(indisp.sign.df), "indisp.sign.df.csv");
+#dat.multipatt.summary<-capture.output(summary(indisp.sign, indvalcomp=TRUE))
+summary(Indicator.Species, indvalcomp=TRUE)
+```
