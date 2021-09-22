@@ -1,0 +1,60 @@
+```{r SIMPER: Transects}
+library("labdsv")
+library("vegan")
+library("ggplot2")
+library("dplyr")
+library("tidyverse")
+library("tidyr")
+library("clustsig")
+```
+
+```{r load data}
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+sample_data <- read_csv('SMD.rarefied.csv')
+asv_rarefy30k_long <- read_csv("asv_rarefy30k_long.csv")
+```
+
+```{bash}
+qsub -I -q c3b -l ncpus=11,mem=375GB,walltime=72:00:00 
+qsub -I -l ncpus=11,mem=375GB,walltime=120:00:00
+cd /shared/c3/projects/Nathan.Williams.12034652/Rose-Bay/fastq_and_analysis/SIMPER
+module load devel/R-current;
+```
+
+```{r Arrange Data on HPC}
+library("labdsv")
+library("vegan")
+library("ggplot2")
+library("dplyr")
+library("tidyverse")
+library("tidyr")
+library("clustsig")
+
+sample_data <- read_csv('SMD.rarefied.csv')
+asv_rarefy30k_long <- read_csv("asv_rarefy30k_long.csv")
+
+Abundance <- asv_rarefy30k_long %>% select(FGID, SampleID, Abundance_Vegan_Rarefied) %>% distinct()
+Abundance.spread <- Abundance %>% spread(key='SampleID', value='Abundance_Vegan_Rarefied', fill=0)
+rownames(sample_data) <- sample_data$SampleID
+rb.matrix.simper <-  as.matrix(Abundance.spread[,-c(1)])
+rownames(rb.matrix.simper) <- Abundance.spread$FGID
+rb.matrix.simper.t <- t(rb.matrix.simper)
+rb.matrix.nz <- rb.matrix.simper.t[,colSums(rb.matrix.simper.t)!=0]
+```
+
+```{r Run SIMPER}
+simper.weather <- simper(rb.matrix.nz, group = sample_data$Distance_Offshore, permutations = 999);
+saveRDS(simper.weather, 'simper.weather.RDS')
+```
+
+```{r SIMPER: load in simper data}
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+simper <- readRDS("simper.weather.RDS")
+summary(simper, ordered = TRUE, digits = 3)
+```
+
+```{r}
+summary(simper, ordered = TRUE, digits = 3)
+
+simper_pretty <- simper.pretty(rb.matrix.nz, sample_data, c('Location'), perc_cutoff=0.5, low_cutoff = '0.01', low_val=0.01, 'sigASVcontrib')
+```
