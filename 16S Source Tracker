@@ -1,0 +1,40 @@
+```{R Source tracker - Load Data}
+library("tidyverse")
+source('/Applications/sourcetracker/src/SourceTracker.r')
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data_Analysis/Data/16S/Data")
+sample_data <- read_csv('SMD.rarefied.csv')
+asv_rarefy30k_long <- read_csv("asv_rarefy30k_long.csv")
+setwd("~/Dropbox/UTS/PhD/Projects/Chapter2_RoseBay/Data/16S/ST_metatdata")
+metadata <- read.csv('.csv',row.names=1,check=F,comment='')
+```
+
+```{r Arrange Data}
+abund.vars <- c('FGID', 'SampleID', "Abundance_Vegan_Rarefied")
+Abundance <- asv_rarefy30k_long %>% dplyr::select(abund.vars) %>% distinct()
+Abundance.spread <- Abundance %>% pivot_wider(names_from = FGID, values_from = Abundance_Vegan_Rarefied, values_fill=0)
+otus.matrix <-  as.matrix(Abundance.spread %>% column_to_rownames('SampleID'))
+otus.matrix <- na.omit(otus.matrix)
+otus <- otus.matrix
+common.sample.ids <- intersect(rownames(metadata), rownames(otus)) # extract only those samples in common between the two table
+otusSub <- otus[common.sample.ids,] # add sub so that you don't over write the original data
+metadataSub <- metadata[common.sample.ids,] # add sub so that you don't over write the original data
+# double-check that the mapping file and otu table
+# had overlapping samples
+if(length(common.sample.ids) <= 1) {
+    message <- paste(sprintf('Error: there are %d sample ids in common '),
+                    'between the metadata file and data table')
+    stop(message)
+}
+# extract the source environments and source/sink indices
+train.ix <- which(metadata$SourceSink=='Source')
+test.ix <- which(metadata$SourceSink=='Sink')
+envs <- metadata$Location
+if(is.element('Location',colnames(metadata))) desc <- metadata$Location
+# note: to skip tuning, run this instead:
+alpha1 <- alpha2 <- 0.01
+```
+
+```{r Source tracker}
+st <- sourcetracker(train=otusSub[train.ix,], rarefaction_depth = 0, envs=envs[train.ix])
+STresults <- predict(st,otusSub[test.ix,], alpha1=alpha1, alpha2=alpha2)
+```
